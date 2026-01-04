@@ -1,0 +1,54 @@
+pipeline {
+    agent any
+
+     stages {
+        stage('Get Code') {
+            steps {
+                // Obtener código del repo
+                git 'https://github.com/alvaro-unir/helloworld.git'
+            }
+        }
+        stage('Build') {
+           steps {
+              echo 'Eyyy, esto es Python. No hay que compilar nada!!!'
+              echo WORKSPACE
+              sh 'ls' 
+           }
+        }
+        stage('Tests') {
+            parallel {
+                stage('Unit') {
+                    steps {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                export PYTHONPATH=.
+                                export PATH="$HOME/Library/Python/3.9/bin:$PATH"
+                                pytest --junitxml=result-unit.xml test/unit
+                            '''
+                        }
+                    }
+                }
+                stage('Service') {
+                    steps {
+                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                            sh '''
+                                export FLASK_APP=app/api.py
+                                export PYTHONPATH=.
+                                export PATH="$HOME/Library/Python/3.9/bin:$PATH"
+                                flask run &
+                                java -jar /Users/alvaro/unir/lib/wiremock-standalone-3.13.2.jar --port 9090 --root-dir test/wiremock &
+                                ping -c 10 127.0.0.1
+                                pytest --junitxml=result-rest.xml test/rest
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        stage ('Results') {
+            steps {
+                junit 'result*.xml'
+    }
+}   
+     }
+}
