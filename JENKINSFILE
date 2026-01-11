@@ -18,10 +18,11 @@ pipeline {
                     unstash 'code'
                     bat '''
                         set PYTHONPATH=%WORKSPACE%
-                        coverage run --branch --source=app --omit=app\\__init__.py,app\\api.py -m pytest test\\unit
+                        coverage run --branch --source=app --omit=app\\__init__.py,app\\api.py -m pytest --junitxml=result-unit.xml test\\unit
                         coverage xml
                     '''
                     stash name: 'coverage-res', includes: 'coverage.xml'
+                    stash name: 'unit-res', includes: 'result-unit.xml'
                 }
             }
         }
@@ -33,15 +34,10 @@ pipeline {
                     bat '''
             set FLASK_APP=app\\api.py
             set PYTHONPATH=%WORKSPACE%
-
-            start "flask" /B cmd /c "flask run --host=127.0.0.1 --port=5000"
-
+            start "flask" /B cmd /c "python -m flask run --host=127.0.0.1 --port=5000"
             ping 127.0.0.1 -n 5 > nul
-
             start "" cmd /c "java -jar C:\\UNIR\\wiremock-standalone-3.13.2.jar --port 9090 --root-dir test\\wiremock"
-
             ping 127.0.0.1 -n 15 > nul
-
             pytest --junitxml=result-rest.xml test\\rest
                     '''
                     stash name:'rest-res', includes:'result-rest.xml'
@@ -90,23 +86,30 @@ pipeline {
                     bat '''
                         set PYTHONPATH=%WORKSPACE%
                         set FLASK_APP=app\\api.py
-                        start "flask" /B cmd /c "flask run --host=127.0.0.1 --port=5000"
+                        start "flask" /B cmd /c "python -m flask run --host=127.0.0.1 --port=5000"
                         ping 127.0.0.1 -n 5 > nul
                         jmeter -n -t test\\jmeter\\flask.jmx -l flask.jtl
                     '''
+                    perfReport sourceDataFiles: 'flask.jtl'
                 }
-                perfReport sourceDataFiles: 'flask.jtl'
             }
         }
     }
 
     post {
-    always {
-        bat '''
-            for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5000 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || exit /b 0)
-            for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9090 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || exit /b 0)
-        '''
-        cleanWs()
+        always {
+            catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                unstash 'unit-res'
+                unstash 'rest-res'
+                junit testResults: 'result-unit.xml,result-rest.xml', allowEmptyResults: true
+            }
+            catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                bat '''
+                    for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5000 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                    for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9090 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                '''
+                cleanWs()
+            }
+        }
     }
-}
 }
