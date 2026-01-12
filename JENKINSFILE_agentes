@@ -91,35 +91,39 @@ pipeline {
             }
         }
 
-        stage('Coverage') {
-            agent { label 'jenkins-agente-windows02' }
-            steps {
-                bat '''
-                    whoami
-                    hostname
-                '''
-                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
-                    unstash 'coverage-res'
-                    recordCoverage qualityGates: [[criticality: 'NOTE', metric: 'LINE', threshold: 95.0], [criticality: 'FAILURE', metric: 'LINE', threshold: 85.0], [criticality: 'NOTE', metric: 'BRANCH', threshold: 90.0], [criticality: 'FAILURE', metric: 'BRANCH', threshold: 80.0]], tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']]
+        stage('Parallel After Unit') {
+            parallel {
+                stage('Coverage') {
+                    agent { label 'jenkins-agente-windows02' }
+                    steps {
+                        bat '''
+                            whoami
+                            hostname
+                        '''
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'coverage-res'
+                            recordCoverage qualityGates: [[criticality: 'NOTE', metric: 'LINE', threshold: 95.0], [criticality: 'FAILURE', metric: 'LINE', threshold: 85.0], [criticality: 'NOTE', metric: 'BRANCH', threshold: 90.0], [criticality: 'FAILURE', metric: 'BRANCH', threshold: 80.0]], tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']]
+                        }
+                    }
                 }
-            }
-        }
 
-        stage('Performance') {
-            agent { label 'jenkins-agente-windows03' }
-            steps {
-                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
-                    unstash 'code'
-                    bat '''
-                        whoami
-                        hostname
-                        set PYTHONPATH=%WORKSPACE%
-                        set FLASK_APP=app\\api.py
-                        start "flask" /B cmd /c "python -m flask run --host=127.0.0.1 --port=5000"
-                        ping 127.0.0.1 -n 5 > nul
-                        jmeter -n -t test\\jmeter\\flask.jmx -l flask.jtl
-                    '''
-                    perfReport sourceDataFiles: 'flask.jtl'
+                stage('Performance') {
+                    agent { label 'jenkins-agente-windows03' }
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                whoami
+                                hostname
+                                set PYTHONPATH=%WORKSPACE%
+                                set FLASK_APP=app\\api.py
+                                start "flask" /B cmd /c "python -m flask run --host=127.0.0.1 --port=5000"
+                                ping 127.0.0.1 -n 5 > nul
+                                jmeter -n -t test\\jmeter\\flask.jmx -l flask.jtl
+                            '''
+                            perfReport sourceDataFiles: 'flask.jtl'
+                        }
+                    }
                 }
             }
         }
