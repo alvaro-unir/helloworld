@@ -1,80 +1,170 @@
 pipeline {
-    agent any
+    agent none
 
     options { skipDefaultCheckout() }
 
-     stages {
+    stages {
         stage('Get Code') {
+            agent { label 'jenkins-agente-windows01' }
             steps {
-                // Obtener código del repo
+                bat '''
+                    whoami
+                    hostname
+                '''
                 git 'https://github.com/alvaro-unir/helloworld.git'
-	            echo WORKSPACE
-                sh 'ls -al'
+                echo WORKSPACE
                 stash name:'code', includes:'**'
             }
         }
-    
-        stage('Build') {
-           steps {
-              echo 'Eyyy, esto es Python. No hay que compilar nada!!!'
-           }
-        }
-        
-        stage('Tests')
-        {
-            parallel
-            {
-                stage('Unit') {
-                    agent {label 'linux'}
-                    steps {
-                        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                            unstash name:'code'
-                            sh '''
-                                ls -la
-                                export PYTHONPATH=${WORKSPACE}
-                                pytest --junitxml=result-unit.xml test/unit
-                            '''
-                            stash name:'unit-res', includes:'result-unit.xml'
-                       }
-                    }
-                }   
-                
-                
-                stage('Rest') {
-                    agent {label 'windows'}
-                    steps {
-                      catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-                        unstash name:'code'
-                        bat '''
-                        set FLASK_APP=app\\api.py
-                        set PYTHONPATH=%WORKSPACE%
 
-                        start "flask" /B cmd /c ""C:\\Program Files\\Python314\\python.exe" -m flask run --host=127.0.0.1 --port=5000"
-
-                        ping 127.0.0.1 -n 5 > nul
-
-                        start "" cmd /c "java -jar C:\\UNIR\\wiremock-standalone-3.13.2.jar --port 9090 --root-dir test\\wiremock"
-
-                        ping 127.0.0.1 -n 15 > nul
-
-                        "C:\\Program Files\\Python314\\python.exe" -m pytest --junitxml=result-rest.xml test\\rest
-                        '''
-
-                      }
-                      stash name:'rest-res', includes:'result-rest.xml'
-                    }    
-                }                
-                
-            }
-        }
-
-        stage('Results') {
+        stage('Unit') {
+            agent { label 'jenkins-agente-windows01' }
             steps {
-                unstash name:'unit-res'
-                unstash name:'rest-res'
-                junit 'result*.xml' 
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    unstash 'code'
+                    bat '''
+                        whoami
+                        hostname
+                        set PYTHONPATH=%WORKSPACE%
+                        coverage run --branch --source=app --omit=app\\__init__.py,app\\api.py -m pytest --junitxml=result-unit.xml test\\unit
+                        coverage xml
+                    '''
+                    stash name: 'coverage-res', includes: 'coverage.xml'
+                    stash name: 'unit-res', includes: 'result-unit.xml'
+                }
             }
         }
-     
+
+        stage('Parallel Checks') {
+            parallel {
+                stage('Rest') {
+                    agent { label 'jenkins-agente-windows02' }
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                whoami
+                                hostname
+                                set FLASK_APP=app\\api.py
+                                set PYTHONPATH=%WORKSPACE%
+                                start "flask" /B cmd /c "python -m flask run --host=127.0.0.1 --port=5000"
+                                ping 127.0.0.1 -n 5 > nul
+                                start "" cmd /c "java -jar C:\\UNIR\\wiremock-standalone-3.13.2.jar --port 9090 --root-dir test\\wiremock"
+                                ping 127.0.0.1 -n 15 > nul
+                                pytest --junitxml=result-rest.xml test\\rest
+                            '''
+                            stash name:'rest-res', includes:'result-rest.xml'
+                        }
+                    }
+                }
+
+                stage('Static') {
+                    agent { label 'jenkins-agente-windows03' }
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                whoami
+                                hostname
+                                flake8 --exit-zero --format=pylint app > flake8.out
+                            '''
+                            recordIssues tools: [flake8(name: 'Flake8', pattern: 'flake8.out')], qualityGates: [[threshold: 8, type: 'TOTAL', unstable: true], [threshold: 10, type: 'TOTAL', unstable: false]]
+                        }
+                    }
+                }
+
+                stage('Security Test') {
+                    agent { label 'jenkins-agente-windows01' }
+                    steps {
+                        catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                            unstash 'code'
+                            bat '''
+                                whoami
+                                hostname
+                                set PYTHONPATH=%WORKSPACE%
+                                bandit --exit-zero -r . -f custom -o bandit.out --msg-template "{abspath}:{line}: [{test_id}] {msg}"
+                            '''
+                            recordIssues tools: [pyLint(name: 'Bandit', pattern: 'bandit.out')], qualityGates: [[threshold: 2, type: 'TOTAL', unstable: true], [threshold: 4, type: 'TOTAL', unstable: false]]
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Coverage') {
+            agent { label 'jenkins-agente-windows02' }
+            steps {
+                bat '''
+                    whoami
+                    hostname
+                '''
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    unstash 'coverage-res'
+                    recordCoverage qualityGates: [[criticality: 'NOTE', metric: 'LINE', threshold: 95.0], [criticality: 'FAILURE', metric: 'LINE', threshold: 85.0], [criticality: 'NOTE', metric: 'BRANCH', threshold: 90.0], [criticality: 'FAILURE', metric: 'BRANCH', threshold: 80.0]], tools: [[parser: 'COBERTURA', pattern: 'coverage.xml']]
+                }
+            }
+        }
+
+        stage('Performance') {
+            agent { label 'jenkins-agente-windows03' }
+            steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    unstash 'code'
+                    bat '''
+                        whoami
+                        hostname
+                        set PYTHONPATH=%WORKSPACE%
+                        set FLASK_APP=app\\api.py
+                        start "flask" /B cmd /c "python -m flask run --host=127.0.0.1 --port=5000"
+                        ping 127.0.0.1 -n 5 > nul
+                        jmeter -n -t test\\jmeter\\flask.jmx -l flask.jtl
+                    '''
+                    perfReport sourceDataFiles: 'flask.jtl'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            node('jenkins-agente-windows01') {
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    unstash 'unit-res'
+                    unstash 'rest-res'
+                    junit testResults: 'result-unit.xml,result-rest.xml', allowEmptyResults: true
+                }
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    bat '''
+                        whoami
+                        hostname
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5000 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9090 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                    '''
+                    cleanWs()
+                }
+            }
+            node('jenkins-agente-windows02') {
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    bat '''
+                        whoami
+                        hostname
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5000 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9090 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                    '''
+                    cleanWs()
+                }
+            }
+            node('jenkins-agente-windows03') {
+                catchError(buildResult: 'SUCCESS', stageResult: 'SUCCESS') {
+                    bat '''
+                        whoami
+                        hostname
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :5000 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                        for /f "tokens=5" %%a in ('netstat -ano ^| findstr :9090 ^| findstr LISTENING') do (taskkill /F /PID %%a >nul 2>nul || ver >nul)
+                    '''
+                    cleanWs()
+                }
+            }
+        }
     }
 }
